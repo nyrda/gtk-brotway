@@ -7,6 +7,10 @@
 void broadway_events_got_input (BroadwayInputMsg *message,
 				gint32 client_id);
 
+void broadway_clipboard_contents_received (guint32     id,
+                                           const char *text,
+                                           gsize       len);
+
 typedef struct _BroadwayServer BroadwayServer;
 typedef struct _BroadwayServerClass BroadwayServerClass;
 
@@ -82,6 +86,11 @@ guint32             broadway_server_ungrab_pointer            (BroadwayServer  *
                                                                guint32          time_);
 void                broadway_server_set_show_keyboard         (BroadwayServer  *server,
                                                                gboolean         show);
+void                broadway_server_set_clipboard             (BroadwayServer  *server,
+                                                               const char      *text,
+                                                               gsize            len);
+void                broadway_server_request_clipboard         (BroadwayServer  *server,
+                                                               guint32          id);
 guint32             broadway_server_new_surface               (BroadwayServer  *server,
                                                                guint32          client,
                                                                int              x,

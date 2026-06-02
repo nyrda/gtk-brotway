@@ -2741,8 +2741,14 @@ check_autohide (GdkEvent *event)
       if (grab_surface)
         {
           event_surface = gdk_event_get_surface (event);
-          if (event_surface->autohide &&
-              evtype != GDK_TOUCH_BEGIN &&
+          /* has_pointer is tracked from pointer crossings, which the touch
+           * path doesn't send, so it is always FALSE for touch. Without this
+           * guard a tap *inside* an autohide popup (e.g. selecting a
+           * GtkDropDown item) would look "outside" and dismiss the popup
+           * instead of activating the item. The touch landed on event_surface,
+           * so trust it. */
+          if (evtype != GDK_TOUCH_BEGIN &&
+              event_surface->autohide &&
               !event_surface->has_pointer)
             event_surface = NULL;
 

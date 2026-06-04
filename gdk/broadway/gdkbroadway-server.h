@@ -57,6 +57,8 @@ void               _gdk_broadway_server_surface_set_transient_for (GdkBroadwaySe
 								  int                 parent);
 void               _gdk_broadway_server_set_show_keyboard        (GdkBroadwayServer  *server,
 								  gboolean            show_keyboard);
+void               _gdk_broadway_server_open_uri                 (GdkBroadwayServer  *server,
+								  const char         *uri);
 guint32             gdk_broadway_server_upload_texture           (GdkBroadwayServer  *server,
                                                                   GdkTexture         *texture);
 void                gdk_broadway_server_release_texture          (GdkBroadwayServer  *server,

@@ -50,6 +50,7 @@ GdkDrag * _gdk_broadway_surface_drag_begin        (GdkSurface          *surface,
                                                    GdkDragAction       actions,
                                                    double              dx,
                                                    double              dy);
+GdkSurface * gdk_broadway_drag_surface_new        (GdkDisplay         *display);
 gboolean _gdk_broadway_moveresize_handle_event    (GdkDisplay *display,
                                                    BroadwayInputMsg *event);
 gboolean _gdk_broadway_moveresize_configure_done  (GdkDisplay *display,

@@ -71,6 +71,9 @@ void gdk_broadway_surface_move_resize (GdkSurface *surface,
 void _gdk_broadway_display_size_changed (GdkDisplay *display,
                                          BroadwayInputScreenResizeNotify *msg);
 
+void _gdk_broadway_display_set_suspended (GdkDisplay *display,
+                                          gboolean    suspended);
+
 void _gdk_broadway_events_got_input      (GdkDisplay *display,
                                           BroadwayInputMsg *message);
 

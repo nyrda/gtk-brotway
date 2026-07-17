@@ -90,6 +90,11 @@ void          _gdk_broadway_clipboard_contents_received   (GdkDisplay *display,
                                                            gsize       len);
 
 GdkDisplay * _gdk_broadway_display_open (const char *display_name);
+void     _gdk_broadway_display_init_settings     (GdkDisplay *display);
+void     _gdk_broadway_display_finalize_settings (GdkDisplay *display);
+gboolean _gdk_broadway_display_get_setting       (GdkDisplay *display,
+                                                  const char *name,
+                                                  GValue     *value);
 void _gdk_broadway_display_queue_events (GdkDisplay *display);
 GdkKeymap* _gdk_broadway_display_get_keymap (GdkDisplay *display);
 

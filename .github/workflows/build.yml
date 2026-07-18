@@ -1,158 +1,78 @@
-# Reusable build: compile broadway-only GTK for ONE base (gtk version) across
-# amd64 + arm64, assemble the .deb, and upload it as a WORKFLOW ARTIFACT. No
-# GitHub Release publishing happens here - callers handle that, if at all.
-#
-# Each arch builds natively (amd64 on ubuntu-24.04, arm64 on ubuntu-24.04-arm)
-# inside `container:` (the matching Ubuntu) so the binary stays ABI-compatible
-# with that Ubuntu's apt GTK. The SONAME is read from the built .so, not hardcoded.
-#
-# Called by:
-#   - release.yml (orchestrator on this `ci` branch), per target via matrix
-#   - each fork branch's ci.yml stub (single target = validation build)
-name: Build Broadway GTK .deb (reusable)
+name: Build Keymasq AppImage overlay
 
 on:
-  workflow_call:
-    inputs:
-      ref:
-        description: "Git ref to build (fork branch, fork tag, or SHA)."
-        required: true
-        type: string
-      gtk:
-        description: "GTK base version, e.g. 4.22.4 (used in the .deb name + caches)."
-        required: true
-        type: string
-      container:
-        description: "Ubuntu image to build in, e.g. ubuntu:26.04."
-        required: true
-        type: string
-      demos:
-        description: "Demos meson flag: -Dbuild-demos=false (4.22+)."
-        required: true
-        type: string
+  push:
+    branches: [ci]
+    tags: ['keymasq-v*']
+    paths:
+      - '.github/workflows/build.yml'
+      - 'packaging/keymasq/**'
+  pull_request:
+    branches: [ci]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'packaging/keymasq/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  RUNTIME_PKGS: "libgtk-4-1, libgtk-4-bin"
-
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04,     multiarch: x86_64-linux-gnu }
-          - { arch: arm64, runner: ubuntu-24.04-arm, multiarch: aarch64-linux-gnu }
-    runs-on: ${{ matrix.runner }}
-    container: ${{ inputs.container }}
-    env:
-      DEBIAN_FRONTEND: noninteractive
-      ARCH: ${{ matrix.arch }}
-      MULTIARCH: ${{ matrix.multiarch }}
-      GTK_VERSION: ${{ inputs.gtk }}
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: "1G"
+    name: Arch Linux x86_64
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
     steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential ccache meson ninja-build pkg-config gettext gettext-base python3 git ca-certificates zstd \
-            libglib2.0-dev libglib2.0-dev-bin libgraphene-1.0-dev libcairo2-dev libpango1.0-dev \
-            libgdk-pixbuf-2.0-dev libepoxy-dev libxkbcommon-dev libfribidi-dev libharfbuzz-dev \
-            libjpeg-dev libpng-dev libtiff-dev libdrm-dev
+      - name: Install build and verification dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed
+          curl zstd meson ninja python gettext sassc
+          glib2 glib2-devel cairo pango gdk-pixbuf2 graphene libepoxy
+          fribidi harfbuzz libxkbcommon libjpeg-turbo libpng libtiff libdrm
 
-      - uses: actions/checkout@v4
+      # Pinned to actions/checkout v4.3.0.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Build and run bundle verification
+        run: ./packaging/keymasq/build-overlay.sh
+
+      - name: Record immutable checksum
+        working-directory: dist
+        run: sha256sum --check --strict gtk4-brotway-keymasq-x86_64.tar.zst.sha256
+
+      # Pinned to actions/upload-artifact v4.6.2.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          ref: ${{ inputs.ref }}
-
-      # The main checkout above replaces the workspace with the fork source. The
-      # .deb packaging templates live on the `ci` branch, so pull just those into
-      # _ci/ via a second sparse checkout.
-      - name: Checkout packaging templates (ci)
-        uses: actions/checkout@v4
-        with:
-          ref: ci
-          sparse-checkout: packaging/debian
-          path: _ci
-
-      # ccache persists across runs so unchanged .c files relink without recompiling.
-      # Keyed per (gtk, arch); the SHA suffix + prefix restore-keys give each run the
-      # latest cache and save a new one.
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ inputs.gtk }}-${{ matrix.arch }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ inputs.gtk }}-${{ matrix.arch }}-
-
-      - name: Build (broadway-only)
-        run: |
-          ccache --zero-stats
-          rm -rf _build
-          # meson auto-detects ccache in PATH and uses it as the compiler launcher.
-          # ${{ inputs.demos }} is the demos meson flag (-Dbuild-demos=false).
-          meson setup _build \
-            -Dbroadway-backend=true \
-            -Dx11-backend=false -Dwayland-backend=false -Dwin32-backend=false -Dmacos-backend=false \
-            -Dvulkan=disabled -Dintrospection=disabled -Ddocumentation=false -Dman-pages=false \
-            -Dbuild-testsuite=false -Dbuild-tests=false -Dbuild-examples=false ${{ inputs.demos }} \
-            -Dmedia-gstreamer=disabled -Dprint-cups=disabled \
-            -Dbuildtype=release
-          ninja -C _build
-          ccache --show-stats
-
-      - name: Assemble .deb
-        run: |
-          # Revision: vN tag -> N (e.g. 123); otherwise the run number (rolling builds).
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            REV="${GITHUB_REF_NAME#v}"
-          else
-            REV="0+r${GITHUB_RUN_NUMBER}"
-          fi
-          DEB_VERSION="${GTK_VERSION}-${REV}"
-          # SONAME read from the actual build output (e.g. libgtk-4.so.1.2200.2), so a
-          # GTK version bump needs no edit here.
-          SO_NAME="$(basename "$(find _build/gtk -maxdepth 1 -type f -name 'libgtk-4.so.1.*.*' | head -n1)")"
-          test -n "${SO_NAME}"
-          rm -rf pkgroot
-          # Private-prefix overlay (matches the Arch PKGBUILD): the broadway-only
-          # fork lib + daemon land in /usr/lib/gtk4-brotway, NOT over the system
-          # gtk4. Apps opt in via gtk4-brotway-run (LD_LIBRARY_PATH); on a desktop
-          # the rest of GTK keeps its x11/wayland backends. No Replaces/hold.
-          PREFIX=usr/lib/gtk4-brotway
-          install -d pkgroot/DEBIAN "pkgroot/${PREFIX}" pkgroot/usr/bin
-          install -m644 "_build/gtk/${SO_NAME}" "pkgroot/${PREFIX}/${SO_NAME}"
-          ln -sf "${SO_NAME}" "pkgroot/${PREFIX}/libgtk-4.so.1"
-          ln -sf libgtk-4.so.1 "pkgroot/${PREFIX}/libgtk-4.so"
-          # broadwayd lives in the prefix; the launcher invokes it by full path.
-          install -m755 _build/gdk/broadway/gtk4-broadwayd "pkgroot/${PREFIX}/gtk4-broadwayd"
-          # Net-new /usr/bin names (no clash with stock gtk4). broadwayd spawns the
-          # debug menu by name via PATH; without it the menu silently fails to spawn.
-          test -f _build/tools/gtk4-brotway-debugmenu
-          install -m755 _build/tools/gtk4-brotway-debugmenu pkgroot/usr/bin/gtk4-brotway-debugmenu
-          # One-shot launcher: starts broadwayd, runs the app, tears it down on exit.
-          test -f _build/tools/gtk4-brotway-run
-          install -m755 _build/tools/gtk4-brotway-run pkgroot/usr/bin/gtk4-brotway-run
-          # Control + postinst come from packaging/debian/ on the ci branch (the
-          # _ci sparse checkout). envsubst fills only the named vars.
-          export DEB_VERSION
-          envsubst '${DEB_VERSION} ${ARCH} ${GTK_VERSION} ${RUNTIME_PKGS}' \
-            < _ci/packaging/debian/control.in > pkgroot/DEBIAN/control
-          install -m755 _ci/packaging/debian/postinst pkgroot/DEBIAN/postinst
-          # Stable, unversioned per-base name (the 'latest' release asset). The release
-          # job derives the version-stamped name for vN tags.
-          DEB_FILE="gtk4-brotway_${GTK_VERSION}_${ARCH}.deb"
-          dpkg-deb --root-owner-group --build pkgroot "${DEB_FILE}"
-          dpkg-deb --info "${DEB_FILE}"
-          echo "DEB_FILE=${DEB_FILE}" >> "${GITHUB_ENV}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-${{ inputs.gtk }}-${{ matrix.arch }}
-          path: ${{ env.DEB_FILE }}
+          name: gtk4-brotway-keymasq-x86_64
+          path: |
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst.sha256
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/keymasq-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Pinned to actions/download-artifact v4.3.0.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gtk4-brotway-keymasq-x86_64
+          path: dist
+
+      - name: Verify downloaded checksum
+        working-directory: dist
+        run: sha256sum --check --strict gtk4-brotway-keymasq-x86_64.tar.zst.sha256
+
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Arch Linux x86_64 private GTK Brotway overlay for the Keymasq AppImage." \
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst \
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst.sha256

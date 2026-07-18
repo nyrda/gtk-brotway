@@ -1,0 +1,133 @@
+diff --git a/tools/gtk-brotway-run.c b/tools/gtk-brotway-run.c
+index 761b936..ad1a4fe 100644
+--- a/tools/gtk-brotway-run.c
++++ b/tools/gtk-brotway-run.c
+@@ -31,9 +31,10 @@
+ #include <sys/stat.h>
+ #include <sys/wait.h>
+ #include <time.h>
++#include <libgen.h>
+ #include <unistd.h>
+
+-#define PREFIX "/usr/lib/gtk4-brotway"
++#define DEFAULT_PREFIX "/usr/lib/gtk4-brotway"
+
+ static pid_t bwd_pid = 0;
+
+@@ -156,8 +157,46 @@ static int parse_num(const char *s, const char *what, int lo, int hi)
+   return (int) v;
+ }
+
++/* Resolve the private runtime next to this executable.  AppImage packaging can
++ * override the result explicitly with BROTWAY_PREFIX. */
++static char *resolve_prefix(void)
++{
++  const char *configured = getenv("BROTWAY_PREFIX");
++  if (configured && *configured)
++    return strdup(configured);
++
++  char executable[PATH_MAX];
++  ssize_t length = readlink("/proc/self/exe", executable, sizeof executable - 1);
++  if (length > 0 && (size_t) length < sizeof executable)
++    {
++      executable[length] = '\0';
++      return strdup(dirname(executable));
++    }
++
++  return strdup(DEFAULT_PREFIX);
++}
++
++static void prepend_path(const char *name, const char *directory)
++{
++  const char *current = getenv(name);
++  char *value;
++  if (current && *current)
++    {
++      if (asprintf(&value, "%s:%s", directory, current) < 0)
++        exit(1);
++    }
++  else
++    value = strdup(directory);
++  if (!value || setenv(name, value, 1) != 0)
++    exit(1);
++  free(value);
++}
++
+ int main(int argc, char **argv)
+ {
++  char *prefix = resolve_prefix();
++  if (!prefix)
++    return 1;
+   const char *disp_arg = getenv("BROTWAY_DISPLAY");
+   const char *port_env = getenv("BROTWAY_PORT");
+   int disp_set = disp_arg != NULL;
+@@ -198,28 +237,20 @@ int main(int argc, char **argv)
+   int no_app = optind >= argc;
+   char **cmd = no_app ? NULL : &argv[optind];
+
+-  /* Point LD_LIBRARY_PATH at the fork prefix so the app and broadwayd load the
+-   * fork lib, leaving the system gtk4 untouched. */
+-  const char *ldcur = getenv("LD_LIBRARY_PATH");
+-  char *ldp;
+-  if (ldcur && *ldcur)
+-    {
+-      if (asprintf(&ldp, "%s:%s", PREFIX, ldcur) < 0)
+-        return 1;
+-    }
+-  else
+-    ldp = strdup(PREFIX);
+-  setenv("LD_LIBRARY_PATH", ldp, 1);
+-  free(ldp);
++  /* Load the private GTK and expose the selected debug-menu helper to the daemon. */
++  prepend_path("LD_LIBRARY_PATH", prefix);
++  const char *helper_path = getenv("BROTWAY_HELPER_PATH");
++  prepend_path("PATH", helper_path && *helper_path ? helper_path : prefix);
+
+   char bwd_path[PATH_MAX];
+-  snprintf(bwd_path, sizeof bwd_path, "%s/gtk4-broadwayd", PREFIX);
++  snprintf(bwd_path, sizeof bwd_path, "%s/gtk4-broadwayd", prefix);
+   if (access(bwd_path, X_OK) != 0)
+     {
+       fputs("brotway-run: gtk4-broadwayd not found (is gtk4-brotway installed?)\n", stderr);
+       return 1;
+     }
+   char *bwd = bwd_path;
++  free(prefix);
+
+   if (!no_app)
+     {
+@@ -262,18 +302,31 @@ int main(int argc, char **argv)
+   if (bwd_pid == 0)
+     {
+-      char *bargv[8];
++      const char *loader = getenv("BROTWAY_LOADER");
++      const char *library_path = getenv("BROTWAY_LIBRARY_PATH");
++      char *bargv[12];
+       int n = 0;
+-      bargv[n++] = (char *) "gtk4-broadwayd";
++      if (loader && *loader)
++        {
++          bargv[n++] = (char *) loader;
++          if (library_path && *library_path)
++            {
++              bargv[n++] = (char *) "--library-path";
++              bargv[n++] = (char *) library_path;
++            }
++          bargv[n++] = bwd;
++        }
++      else
++        bargv[n++] = (char *) "gtk4-broadwayd";
+       bargv[n++] = (char *) "-p";
+       bargv[n++] = portstr;
+       if (address)
+         {
+           bargv[n++] = (char *) "-a";
+           bargv[n++] = (char *) address;
+         }
+       bargv[n++] = disp;
+       bargv[n] = NULL;
+-      execv(bwd, bargv);
++      execv(loader && *loader ? loader : bwd, bargv);
+       perror("brotway-run: exec broadwayd");
+       _exit(127);
+     }

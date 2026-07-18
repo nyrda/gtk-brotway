@@ -1,0 +1,153 @@
+# Build the single-base Broadway clipboard/touch fork (GTK 4.22.x) and collect both
+# arch artifacts into ONE immutable GitHub Release. Lives on the orphan `ci` branch.
+#
+# On a vX.Y.Z tag, the code is built from its PINNED per-version tag <gtk>-<X.Y.Z>
+# (created manually first), and both artifacts (2 arches) are published as:
+#   gtk4-brotway_<gtk>-<X.Y.Z>_<arch>.deb   (e.g. ..._4.22.4-3.0.0_amd64.deb)
+#
+# Release notes come from the `## [vX.Y.Z]` section of CHANGELOG.md on this `ci`
+# branch (single source of truth), so promote [Unreleased] -> [v3.0.0] and commit it
+# here BEFORE tagging - the v tag must point at the commit that has the section.
+#
+# Cutting v3.0.0:
+#   # on ci: promote [Unreleased] -> ## [v3.0.0] - <date> in CHANGELOG.md, commit, push
+#   git tag 4.22.4-3.0.0 <code-commit> && git push origin 4.22.4-3.0.0
+#   git tag v3.0.0 ci                  && git push origin v3.0.0
+name: Release Broadway GTK .debs
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      rev: ${{ steps.rev.outputs.rev }}        # "123" for tag v123
+    steps:
+      - id: rev
+        run: echo "rev=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { gtk: "4.22.4", container: "ubuntu:26.04", demos: "-Dbuild-demos=false" }
+    # Build the pinned per-version tag <gtk>-N. A missing tag fails checkout in
+    # build.yml, so the release does not publish.
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ format('{0}-{1}', matrix.target.gtk, needs.setup.outputs.rev) }}
+      gtk: ${{ matrix.target.gtk }}
+      container: ${{ matrix.target.container }}
+      demos: ${{ matrix.target.demos }}
+
+  # Native Arch package, built in an archlinux container against CURRENT Arch gtk4
+  # (so it only loads on an Arch still on the 4.22.x series). Best-effort: if Arch's
+  # gtk4 has drifted off 4.22 the build fails and the .deb release still ships.
+  arch:
+    needs: setup
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    continue-on-error: true
+    env:
+      REV: ${{ needs.setup.outputs.rev }}
+    steps:
+      - name: Install toolchain
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git
+          useradd -m builder
+          printf 'builder ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging/arch
+
+      - name: Build native .pkg.tar.zst
+        run: |
+          set -eux
+          # Pin the package version to this release; _gtkbase stays as committed.
+          sed -i "s/^pkgver=.*/pkgver=${REV}/" packaging/arch/PKGBUILD
+          chown -R builder:builder packaging/arch
+          sudo -u builder bash -c 'cd packaging/arch && makepkg -s --noconfirm --needed --clean'
+          ls -l packaging/arch/*.pkg.tar.zst
+
+      - name: Upload Arch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-pkg
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  release:
+    needs: [build, arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # The v* tag points at this `ci` commit, so the checkout carries CHANGELOG.md.
+      - uses: actions/checkout@v4
+
+      - name: Download all .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+
+      - name: Download Arch package (best-effort)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: arch-pkg
+          path: arch
+
+      # Pull the `## vN` section out of CHANGELOG.md as the release body. Falls
+      # back to a generic line if the section is missing, so a release never fails
+      # just because the changelog wasn't updated.
+      - name: Build release notes from CHANGELOG
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"; REV="${TAG#v}"
+          awk -v ver="## ${TAG}" '
+            index($0, ver)==1 {flag=1; next}
+            flag && /^## / {exit}
+            flag && /^\[release\]/ {next}
+            flag {print}
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md   # strip leading blanks + the docs link row
+          # Fall back to a generic line if the section was missing/empty.
+          if [ ! -s notes.md ]; then
+            echo "Single-base (4.22.4) multi-arch (amd64, arm64) GTK Brotway, revision ${REV}." > notes.md
+          fi
+          echo "--- release notes for ${TAG} ---"; cat notes.md
+
+      - name: Publish ${{ github.ref_name }} release
+        run: |
+          set -eux
+          ls -l ./*.deb
+          TAG="${GITHUB_REF_NAME}"; REV="${TAG#v}"
+          # Version-stamp the per-base/arch names for this immutable release.
+          mkdir -p versioned
+          for f in ./*.deb; do
+            b="$(basename "${f%.deb}")"      # gtk4-brotway_<gtk>_<arch>
+            arch="${b##*_}"; rest="${b%_*}"  # <arch> ; gtk4-brotway_<gtk>
+            cp "$f" "versioned/${rest}-${REV}_${arch}.deb"
+          done
+          ls -l ./versioned/*.deb
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "${TAG}" \
+                 --notes-file notes.md
+          gh release upload "$TAG" ./versioned/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+          # Attach the native Arch package (install with `pacman -U`) when the Arch
+          # build succeeded (skipped if Arch gtk4 has drifted off 4.22).
+          shopt -s nullglob
+          arch_assets=(arch/*.pkg.tar.zst)
+          if [ ${#arch_assets[@]} -gt 0 ]; then
+            gh release upload "$TAG" "${arch_assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          fi

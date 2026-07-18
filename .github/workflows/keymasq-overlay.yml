@@ -1,0 +1,78 @@
+name: Build Keymasq AppImage overlay
+
+on:
+  push:
+    branches: [ci]
+    tags: ['keymasq-v*']
+    paths:
+      - '.github/workflows/keymasq-overlay.yml'
+      - 'packaging/keymasq/**'
+  pull_request:
+    branches: [ci]
+    paths:
+      - '.github/workflows/keymasq-overlay.yml'
+      - 'packaging/keymasq/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Arch Linux x86_64
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install build and verification dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed
+          curl zstd meson ninja python gettext sassc
+          glib2 glib2-devel cairo pango gdk-pixbuf2 graphene libepoxy
+          fribidi harfbuzz libxkbcommon libjpeg-turbo libpng libtiff libdrm
+
+      # Pinned to actions/checkout v4.3.0.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Build and run bundle verification
+        run: ./packaging/keymasq/build-overlay.sh
+
+      - name: Record immutable checksum
+        working-directory: dist
+        run: sha256sum --check --strict gtk4-brotway-keymasq-x86_64.tar.zst.sha256
+
+      # Pinned to actions/upload-artifact v4.6.2.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gtk4-brotway-keymasq-x86_64
+          path: |
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/keymasq-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Pinned to actions/download-artifact v4.3.0.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gtk4-brotway-keymasq-x86_64
+          path: dist
+
+      - name: Verify downloaded checksum
+        working-directory: dist
+        run: sha256sum --check --strict gtk4-brotway-keymasq-x86_64.tar.zst.sha256
+
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Arch Linux x86_64 private GTK Brotway overlay for the Keymasq AppImage." \
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst \
+            dist/gtk4-brotway-keymasq-x86_64.tar.zst.sha256

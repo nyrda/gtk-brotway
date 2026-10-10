@@ -4,10 +4,10 @@ set -euo pipefail
 # This bundle is intentionally built against current Arch Linux. Keymasq later
 # collects the dynamic dependency closure into the AppImage from the same image.
 readonly SOURCE_REPOSITORY="https://github.com/nyrda/gtk-brotway"
-readonly SOURCE_COMMIT="8d204d09eca8613ee0bd59786a29935b5917f188"
-readonly UPSTREAM_TAG="4.22.4-3.2.0"
-readonly SOURCE_ARCHIVE_SHA256="d8c014748930fb787a94804e9bf153c9b61335f5ab580860ad833ad790ff1891"
-readonly SOURCE_DATE_EPOCH="1784334137"
+readonly SOURCE_COMMIT="b0d62caa69a53d72c4828d5a9d63f3cba1c41f7e"
+readonly UPSTREAM_TAG="4.24.1-3.2.0"
+readonly SOURCE_ARCHIVE_SHA256="26c08cb90b417e92f68e870efaf8fcd7336334fca9bf7f1d78aa23f73c46b1a9"
+readonly SOURCE_DATE_EPOCH="1791664823"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
